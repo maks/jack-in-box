@@ -60,6 +60,35 @@ if [[ ! -s "$PKG_LIST" ]]; then
   exit 1
 fi
 
+# dnf5 deliberately does NOT read the host's repo configuration when an
+# --installroot is given: an empty installroot therefore resolves ZERO
+# repositories and every transaction dies with "No repositories were loaded from
+# the installroot" plus a suggestion to pass --use-host-config. dnf4 loads host
+# repos unasked and rejects that flag as an unknown argument, so gate on the
+# reported version rather than the binary name -- Fedora ships `dnf` as dnf5 on
+# some releases and as dnf4 on others. Every installroot call needs it, because
+# the packages that would provide repo files are the ones being installed.
+HOST_CONFIG=()
+DNF_IS_5=0
+# Ask the binary whether it accepts the flag rather than trusting its name or its
+# --version banner (which needs /etc/dnf/dnf.conf to be readable, and is a dnf5
+# alias under several names). A rejected option exits non-zero, so this probe is
+# the same question the build actually cares about.
+if "$DNF" --use-host-config --version >/dev/null 2>&1; then
+  DNF_IS_5=1
+elif [[ "$(basename "$DNF")" == dnf5 ]] || "$DNF" --version 2>/dev/null | head -1 | grep -qi 'dnf5'; then
+  DNF_IS_5=1
+fi
+# Escape hatch for a release whose --version output this heuristic misses.
+if [[ "${DNF_USE_HOST_CONFIG:-}" == "1" ]]; then DNF_IS_5=1; fi
+if [[ "${DNF_USE_HOST_CONFIG:-}" == "0" ]]; then DNF_IS_5=0; fi
+if [[ "$DNF_IS_5" == "1" ]]; then
+  HOST_CONFIG=(--use-host-config)
+  echo "   dnf: ${DNF} (dnf5) -> ${HOST_CONFIG[*]} for --installroot transactions"
+else
+  echo "   dnf: ${DNF} (dnf4) -> host repos are loaded unasked"
+fi
+
 # One host-side --installroot transaction, retrying without the SELinux excludes.
 # selinux-policy-targeted is a MANDATORY member of @core on some releases, so
 # excluding it is a hard dependency error rather than a smaller image; the
@@ -67,9 +96,10 @@ fi
 # matters (an enforcing policy would deny sshd + sandboxd, because mkfs.ext4 -d
 # cannot apply RPM file_contexts to the tree).
 dnf_installroot() {
-  if ! "$DNF" --installroot="$BUILD_DIR" --releasever="$REL" -y "${DNF_OPTS[@]}" "$@"; then
+  if ! "$DNF" --installroot="$BUILD_DIR" --releasever="$REL" -y "${HOST_CONFIG[@]}" \
+      "${DNF_OPTS[@]}" "$@"; then
     echo "  ^^ retrying without the SELinux excludes (mandatory @core member on some releases)" >&2
-    "$DNF" --installroot="$BUILD_DIR" --releasever="$REL" -y \
+    "$DNF" --installroot="$BUILD_DIR" --releasever="$REL" -y "${HOST_CONFIG[@]}" \
       --setopt=install_weak_deps=False --setopt=tsflags=nocontexts "$@"
   fi
 }
