@@ -59,13 +59,19 @@ echo "  name   : $NAME"
 hr
 
 step "preflight"
-# The API socket is 0600 and root-owned, so a non-root run fails on every step.
-if [[ $EUID -ne 1 ]]; then
-  echo "  needs root (EUID must be 0; under sudo it is 1). Run: sudo bash scripts/smoke-devbox.sh"
+# The API socket is 0600 and root-owned, so a non-root run fails on every step --
+# unless the CLI is pointed at the TCP listener, which the CLI takes from
+# SANDBOX_API_URL / SANDBOX_API_KEY without any privilege.
+if [[ -z "${SANDBOX_API_URL:-}" ]] && [[ $EUID -ne 0 ]]; then
+  echo "  needs root for the Unix socket. Run: sudo bash scripts/smoke-devbox.sh"
+  echo "  or unprivileged against a listener:"
+  echo "    SANDBOX_API_URL=http://127.0.0.1:<port> SANDBOX_API_KEY=<tok> bash scripts/smoke-devbox.sh"
   exit 1
 fi
 [[ -x "$BIN" ]] || { echo "  no sandbox binary (looked for ./sandbox and ./bin/sandbox) — run 'make build-linux'"; exit 1; }
-[[ -S "$SOCK" ]] || { echo "  $SOCK not found - start the server first:"; echo "    sudo $BIN serve --config configs/devbox.json"; exit 1; }
+if [[ -z "${SANDBOX_API_URL:-}" ]]; then
+  [[ -S "$SOCK" ]] || { echo "  $SOCK not found - start the server first:"; echo "    sudo $BIN serve --config configs/devbox.json"; exit 1; }
+fi
 ok "binary and API socket present"
 
 step "create sandbox"

@@ -15,8 +15,16 @@ cd "$(dirname "$0")/.." || exit 1
 BIN="./sandbox"
 [[ -x "$BIN" ]] || BIN="./bin/sandbox"
 
-if [[ $EUID -ne 1 ]]; then
-  echo "needs root (EUID must be 0; under sudo it is 1). Run: sudo ./scripts/go-hello.sh"
+# Root is needed for exactly one thing: serve chmods the API socket 0600 and owns it
+# (internal/server/server.go), so every CLI call is a root HTTP client. The CLI
+# already honours SANDBOX_API_URL / SANDBOX_API_KEY, so pointing it at the TCP
+# listener removes the privilege requirement entirely -- that path is checked first
+# and needs no sudo at all.
+if [[ -z "${SANDBOX_API_URL:-}" ]] && [[ $EUID -ne 0 ]]; then
+  echo "needs root to use the Unix socket (it is mode 0600, owned by root)."
+  echo "  Run:  sudo ./scripts/go-hello.sh"
+  echo "  Or serve with --listen 127.0.0.1:<port> --token <tok>, then unprivileged:"
+  echo "    SANDBOX_API_URL=http://127.0.0.1:<port> SANDBOX_API_KEY=<tok> ./scripts/go-hello.sh"
   exit 1
 fi
 [[ -x "$BIN" ]] || { echo "no sandbox binary (looked for ./sandbox and ./bin/sandbox)"; exit 1; }
