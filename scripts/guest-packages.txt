@@ -1,0 +1,62 @@
+# Guest apt packages — THE list for the sandbox image.
+#
+# `vim`/`nano`/`htop` came from here, and anything you append here lands in the
+# VM image the same way. Read by two things, which is the whole point:
+#
+#   scripts/build-devbox-rootfs.sh   installs this list when building an image
+#                                    from scratch (needs debootstrap; run on a
+#                                    machine that has it, not necessarily yours)
+#   sandbox rootfs-pkgs              installs this list into an image you
+#                                    ALREADY have (loop-mount + chroot, ~1 min,
+#                                    no debootstrap)
+#
+# So: append a name here, then apply it to your existing image with
+# `sudo ./sandbox rootfs-pkgs` — no rebuild.
+#
+# One package per line; blank lines and `#` comments are ignored. apt must know
+# the name in Ubuntu 24.04 (noble) with `universe` enabled (the build script and
+# rootfs-pkgs both arrange that).
+#
+# Not listed here on purpose:
+#   - Node 22 — from NodeSource, not the Ubuntu archive (step 3 of the build).
+#   - gh — needs its own apt repo + keyring (step 4 of the build).
+#   - Go — the go.dev tarball via `rootfs-pkgs --go`, because noble's golang-go
+#     is 1.22 and refuses to build a go.mod declaring a newer `go` directive.
+#   - sandboxd — the in-guest agent, baked by `sandbox install-agent`.
+
+# editors
+vim
+nano
+micro
+
+# process / file inspection
+htop
+jq
+ripgrep
+fd-find
+bat
+tree
+ncdu
+less
+man-db
+
+# transfer + archive
+wget
+unzip
+zip
+rsync
+
+# multiplexing
+tmux
+
+# python + the toolchain builds (Claude Code, codex, etc.) compile against
+python3
+python3-pip
+python3-venv
+build-essential
+git
+make
+
+# sshd for `sandbox ssh`
+openssh-server
+sudo

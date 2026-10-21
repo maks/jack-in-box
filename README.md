@@ -1,6 +1,6 @@
 # sandbox
 
-Firecracker-based microVM sandboxes for development. Spin up isolated Ubuntu VMs — each with Node 22, Python 3, and common build tooling — in a few hundred milliseconds, then run commands and edit files inside them over an HTTP API or the TypeScript SDK.
+Firecracker-based microVM sandboxes for development. Spin up isolated Ubuntu VMs — each with Node 22, Go, Python 3, the micro editor, and common build tooling — in a few hundred milliseconds, then run commands and edit files inside them over an HTTP API or the TypeScript SDK.
 
 **Docs:** [Quickstart](docs/quickstart.md) · [Concepts](docs/concepts.md) · [HTTP API](docs/http-api.md) · [Self-hosting](docs/self-hosting.md) · [Autoscaling latency](docs/autoscaling-latency.md) · [TypeScript SDK](sdk/typescript/README.md)
 
@@ -22,7 +22,7 @@ Firecracker-based microVM sandboxes for development. Spin up isolated Ubuntu VMs
 │  ┌───────────────────────────┐  ┌───────────────────────────┐  │
 │  │ microVM #1    172.16.0.10 │  │ microVM #2    172.16.0.11 │  │
 │  │                           │  │                           │  │
-│  │ Ubuntu + Node 22 + Py3    │  │ Ubuntu + Node 22 + Py3    │  │
+│  │ Ubuntu + Node + Go + Py3  │  │ Ubuntu + Node + Go + Py3  │  │
 │  │ sandboxd agent     :8090  │  │ sandboxd agent     :8090  │  │
 │  └───────────┬───────────────┘  └───────────┬───────────────┘  │
 │              │ fc0                          │ fc1              │
@@ -45,6 +45,12 @@ Firecracker provides hardware-level isolation (KVM) with ~5MB memory overhead. E
 - Root access (Firecracker requires it)
 - ~6 GB disk for shared assets, plus one sparse rootfs copy per sandbox
 
+The **host** can be any recent Linux distribution — Fedora/RHEL and Debian/Ubuntu
+both work. "Ubuntu" in this README describes the **guest** image; the `apt-get`
+calls that build it run inside a `chroot`, never on your host. The only
+Debian-flavoured requirement is the optional tooling for building that guest
+image yourself (step 2B) instead of fetching it (step 2A).
+
 ## Quick start
 
 ### 1. Build and sync to a remote Linux machine
@@ -55,23 +61,98 @@ cd sandbox
 make sync REMOTE_HOST=your-server
 ```
 
+`make sync` cross-compiles for linux/amd64 and rsyncs `bin/sandbox`,
+`bin/sandboxd`, `Makefile`, `configs` and `scripts` to
+`/home/<you>/jack-in-box` on the remote — that destination is `REMOTE_DIR`, and
+`REMOTE_USER` defaults to your local username so `/home/<you>` lines up. Both
+are overridable on the command line or, persistently, in a gitignored
+`Makefile.local` (`REMOTE_HOST=home-server` + `REMOTE_DIR=jack-in-box` means a
+bare `make sync` is enough).
+
 ### 2. One-time setup (on the remote machine)
 
 ```bash
 ssh you@your-server
-cd ~/sandbox
+cd ~/jack-in-box
 
 # Install Firecracker + kernel
 sudo bash scripts/setup-firecracker.sh
 sudo bash scripts/setup-kernel.sh
+```
 
-# Build the devbox rootfs (takes ~5 min, resumable if interrupted)
-sudo apt-get install -y debootstrap
+Then get a base rootfs. **A** is the short path; **B** builds one from scratch.
+
+**A. Fetch the published image (~1 min, no Debian tooling).** Needs `curl`,
+`tar`, `zstd` and `sha256sum` — on Fedora `sudo dnf install -y zstd`, on
+Debian/Ubuntu `sudo apt-get install -y zstd`:
+
+```bash
+sudo bash scripts/fetch-rootfs.sh
+```
+
+Downloads, verifies the `.sha256`, extracts sparsely to
+`/opt/fc/devbox-rootfs.ext4` **and bakes the `sandboxd` agent in**, so the
+`install-agent` command below is already done for you.
+
+**B. Build it (~5–15 min, resumable — re-run to continue an interrupted build).**
+Pick the builder for the **guest** you want. The host OS is irrelevant to what runs
+in the VMs — the host needs KVM, loop devices and iptables — but it does determine
+which image *factory* you have:
+
+```bash
+# Ubuntu 24.04 guest. Needs debootstrap + ar (binutils) + gpgv (gnupg2):
+#   Fedora host: sudo dnf install -y debootstrap binutils gnupg2
+#                (debootstrap is packaged in Fedora 43+/EPEL; on Arch it is AUR-only)
 sudo bash scripts/build-devbox-rootfs.sh
 
-# Bake the sandboxd guest agent into the rootfs
+# Fedora guest. Native `dnf --installroot` — no debootstrap anywhere, and Fedora's
+# own archive supplies micro, gh, ripgrep and a current Go, so no third-party
+# keyrings and no go.dev tarball.
+sudo bash scripts/build-devbox-rootfs-fedora.sh
+```
+
+Both write the same artifact to `/opt/fc/devbox-rootfs.ext4`, so the golden
+snapshot, hibernation, port proxying and the agent behave identically either way.
+What goes *into* each is declared in `scripts/guest-packages.txt` (Ubuntu) and
+`scripts/guest-packages-fedora.txt` (Fedora).
+
+If `gpgv` genuinely isn't available for the Ubuntu build, `DEBOOTSTRAP_OPTS=--no-check-gpg sudo bash
+scripts/build-devbox-rootfs.sh` skips verification (unverified base image over
+plain HTTP — prefer installing gnupg2).
+
+```bash
+# Bake the sandboxd guest agent into the rootfs (path B only; A already did it)
 sudo ./sandbox install-agent --agent ./sandboxd
 ```
+
+**Adding software to every sandbox.** Software has to be in this image to exist at
+boot: a sandbox's own files live in its copy of the image and are deleted with it,
+so installing inside a sandbox is never the fix. Add it to the base image in
+place — loop-mount plus `chroot`, so no debootstrap, no `dnf --installroot` and no
+rebuild of the base OS. It works on either guest distro (the package manager is read
+off the mounted tree), and with no arguments it installs the declared list that
+matches the image it is pointed at:
+
+```bash
+sudo ./sandbox rootfs-pkgs                 # the declared list for this image
+sudo ./sandbox rootfs-pkgs micro ripgrep   # just these
+sudo ./sandbox rootfs-pkgs --go            # + the Go toolchain
+```
+
+No VM may be running while it works on the image (it refuses; `--force` overrides),
+and it prints the two follow-up steps: `install-agent` to re-stamp the image, then a
+`serve` restart. That restart cold-boots one throwaway VM to rebuild the golden
+snapshot, because golden validity is keyed on the base image's (mtime, size) — about
+a minute, after which creates are hot again. Destroy or wake hibernated sandboxes
+first, since their saved memory diff is anchored to the old base.
+
+The Ubuntu guest's Go is deliberately the go.dev tarball rather than `golang-go`,
+which noble pins to 1.22: that toolchain refuses to build any `go.mod` declaring a
+newer `go` directive, so a copied project would fail its first `go build`. Override
+with `--go-version`. A Fedora guest needs none of that — Fedora's `golang` tracks
+current. To rebuild the whole image instead, delete or rename it first —
+the build script exits early when the image already exists — and note that its final
+step deletes the build tree, so a re-run is a full ~5-10 minute rebuild.
 
 Host networking (bridge, NAT, sysctls) is ensured automatically every time the server starts — no separate network setup step, and nothing to re-run after a reboot.
 
@@ -243,8 +324,11 @@ The base rootfs is a 10 GB sparse ext4 image built by `scripts/build-devbox-root
 |-------|---------|
 | **Base OS** | Ubuntu 24.04 (Noble) via debootstrap |
 | **Node** | Node.js 22 LTS, npm, pnpm, TypeScript |
+| **Go** | `GO_VERSION` (default 1.25.3) from the official `go.dev` tarball at `/usr/local/go` — deliberately not Ubuntu's `golang-go`, which is 1.22 in noble and rejects a newer `go` directive in `go.mod` |
 | **Python** | Python 3, pip, venv |
 | **Build tooling** | build-essential (gcc/g++/make), git |
+| **Editors** | micro, vim, nano, tmux |
+| **CLI** | ripgrep, fd, bat, jq, tree, ncdu, htop, wget, rsync, gh |
 | **Services** | `sandboxd.service` (agent on `:8090`) — no app server runs by default |
 | **Debug** | Root password `devbox`, serial console on `ttyS0` |
 

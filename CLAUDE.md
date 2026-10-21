@@ -4,7 +4,8 @@
 
 Firecracker-based microVM sandboxes for development, exposed via a
 local HTTP API over a Unix socket. Each sandbox boots Ubuntu 24.04 with Node 22,
-pnpm, TypeScript, Python 3, and common build tooling (build-essential, git). It's
+pnpm, TypeScript, Go (`GO_VERSION` from the go.dev tarball, `/usr/local/go`),
+Python 3, the micro editor, and common build tooling (build-essential, git). It's
 a bare sandbox — no app server runs on boot and guest ports are reachable only
 after explicit exposure. e2b style — but self-hosted, on bare metal.
 
@@ -45,6 +46,7 @@ sudo ./sandbox read <id> /path                       # file out of the guest →
 sudo ./sandbox write <id> /path [--from local]       # stdin/local file → guest
 sudo ./sandbox ls <id> [/path]                       # list a guest directory
 sudo ./sandbox install-agent --agent ./sandboxd      # bake sandboxd into base rootfs
+sudo ./sandbox rootfs-pkgs micro --go                 # add packages + Go to the BASE image
 sudo ./sandbox template build --from-image my-env    # container image → template snapshot (docs/templates.md)
 sudo ./sandbox stop-server [--force]                 # SIGTERM (graceful) / SIGKILL the server
 ```
@@ -71,8 +73,13 @@ make remote-list                       # ssh + list
 make remote-down SANDBOX=<id>          # ssh + destroy one
 ```
 
-`sync` rsyncs the binaries so they land at `~/sandbox/sandbox` and
-`~/sandbox/sandboxd` (not under `bin/`). All `remote-*` targets and the
+`sync` rsyncs the binaries so they land at
+`/home/<REMOTE_USER>/<REMOTE_DIR>/sandbox` and `.../sandboxd` (not under
+`bin/`), where `REMOTE_DIR` defaults to `jack-in-box` and `REMOTE_USER` defaults
+to the local username running make — so out of the box the checkout is `~/jack-in-box` and
+both are overridable per-invocation or via gitignored `Makefile.local`. That
+default does NOT change the production fleet hosts, which keep `~/sandbox` via
+their own `REMOTE_DIR`/hardcoded paths. All `remote-*` targets and the
 README use `./sandbox`. Don't reintroduce `./bin/sandbox` in remote commands.
 
 NOPASSWD sudoers (one-time, lets the CLI/server run as root without prompting):
@@ -234,7 +241,8 @@ it's image-pinned — but a prefix missing it fails the roll).
 ```bash
 sudo bash scripts/setup-firecracker.sh      # install firecracker binary
 sudo bash scripts/setup-kernel.sh           # download Firecracker-compatible kernel
-sudo bash scripts/build-devbox-rootfs.sh    # build /opt/fc/devbox-rootfs.ext4 (resumable, ~5 min)
+sudo bash scripts/build-devbox-rootfs.sh    # build an Ubuntu guest image (resumable, ~5 min; needs debootstrap)
+sudo bash scripts/build-devbox-rootfs-fedora.sh  # same artifact built from a Fedora guest tree (native dnf --installroot, no debootstrap)
 sudo ./sandbox install-agent             # bake sandboxd into the rootfs (loop-mount, fast)
 ```
 
@@ -272,6 +280,7 @@ cmd/sandbox/
   shell.go             Interactive PTY: raw-mode stdin ↔ WebSocket /shell; relays SIGWINCH resizes
   files.go             Thin clients: read/write/ls over /files and /dir
   installagent.go      Loop-mounts the base rootfs, installs sandboxd + systemd unit
+  rootfspkgs.go        Loop-mounts the base rootfs, installs packages + optional Go (apt or dnf, autodetected)
   stopserver.go        Finds `sandbox serve` PIDs via /proc, SIGTERM/SIGKILL
   doctor.go            Colored env checks (Linux, KVM, firecracker, kernel, rootfs, bridge, ip_fwd, API socket)
   helpers.go           Shared cfg/socket flags and Client constructor
@@ -1078,6 +1087,36 @@ dry runs. Server passes `false`.
 - **Firecracker stderr/stdout is captured** to `firecracker-<vmid>.log` in the server's cwd.
 After `/logger` is bootstrapped, firecracker writes most logs to its log FIFO (drained by
 the SDK, never persisted). For deep-dive debugging, switch `LogFifo` to a regular file path.
+
+- **Two ways to change what a sandbox boots with, and both dirty the golden.**
+Software must be in the base image to exist at boot: a sandbox's own files live
+in its copy of that image and die with it, so installing inside a sandbox is
+never the fix. `scripts/build-devbox-rootfs.sh` builds an Ubuntu image from scratch
+(needs debootstrap; step 6 deletes the build tree, so a re-run is a FULL rebuild,
+and it exits early if the image already exists) and
+`scripts/build-devbox-rootfs-fedora.sh` builds a Fedora one with native
+`dnf --installroot` — same artifact, so golden/hibernate/templates stay
+distro-agnostic; the declared sets are `scripts/guest-packages.txt` and
+`scripts/guest-packages-fedora.txt`. The Fedora image installs micro/gh/ripgrep/current
+Go from the Fedora archive (no keyrings, no Go tarball) and ships SELinux disabled,
+because `mkfs.ext4 -d` cannot apply RPM `file_contexts` and an enforcing policy would
+deny sshd + sandboxd. `sandbox rootfs-pkgs <pkg...>
+[--go]` edits the existing image in place — loop-mount + chroot + the package manager
+it detects from the mounted tree (apt-get / dnf / dnf5 / microdnf), which also picks
+the matching default list — no debootstrap, ~1 minute, which is the path for a
+working box. Either way the
+mount bumps the base rootfs mtime, and `goldenUsable` keys golden validity on
+(base mtime, size), so the next `serve` cold-boots one throwaway to rebuild the
+golden; hibernated sandboxes have a memory diff anchored to the old base and
+must be woken or destroyed first (the command refuses to run while Firecracker
+processes exist, `--force` overrides, and it says this on success). Hence the
+`install-agent` re-run it prints: the `.agent-stamp` sidecar records the mtime
+the image had after the last agent bake, so skipping it means a later
+`install-agent` re-mounts and invalidates the golden a second time. Go on the APT
+guest is the go.dev tarball NOT `golang-go`: noble ships 1.22, which refuses a
+`go.mod` with a newer `go` directive, so any copied project fails its first build;
+Fedora's `golang` tracks current releases, so the Fedora image uses the distro
+package and `rootfs-pkgs --go` there installs `golang` rather than a tarball.
 
 
 

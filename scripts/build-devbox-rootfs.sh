@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
-# Build a custom rootfs with Node.js, Python, common build tooling, popular CLI
-# utilities (htop, jq, ripgrep, gh, …), and AI coding agents (Claude Code, Codex).
+# Build a custom rootfs with Node.js, Go, Python, common build tooling, popular
+# CLI utilities and editors (htop, jq, ripgrep, gh, micro, …), and AI coding
+# agents (Claude Code, Codex).
 # A bare sandbox — no app server is started on boot; use exec/files (sandboxd)
 # to run whatever you like. Must run on Linux as root (uses debootstrap + chroot).
 # Supports resuming — re-run the script and it skips completed steps.
 set -euo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/pkg-hint.sh"
+
 ASSET_DIR="${ASSET_DIR:-/opt/fc}"
 ROOTFS_PATH="${ASSET_DIR}/devbox-rootfs.ext4"
 ROOTFS_SIZE="${ROOTFS_SIZE:-10G}"
 BUILD_DIR="/opt/fc/rootfs-build"
+
+# Guest Go toolchain version, installed from the official tarball. NOT Ubuntu's
+# golang-go: the noble archive is Go 1.22, which refuses to build a go.mod that
+# declares a newer `go` directive — so a copied project would fail on first
+# `go build`. Keep in sync with go.mod and infra/gcp/startup-control.sh.
+GO_VERSION="${GO_VERSION:-1.25.3}"
 
 if [ -f "$ROOTFS_PATH" ]; then
   echo "==> Rootfs already exists at ${ROOTFS_PATH}"
@@ -17,11 +26,31 @@ if [ -f "$ROOTFS_PATH" ]; then
   exit 0
 fi
 
-# --- Pre-check: debootstrap must be installed ---
+# --- Pre-checks: HOST-side tooling ---
+# This is the only place the host distro matters. Everything below runs in a
+# chroot and installs into an Ubuntu guest, so a Fedora host is fine once it has
+# these Debian tools.
 if ! command -v debootstrap &>/dev/null; then
   echo "ERROR: debootstrap is not installed."
-  echo "  Install it with: sudo apt-get update && sudo apt-get install -y debootstrap"
+  echo "  Install it with: sudo $(pkg_install_hint debootstrap)"
+  echo "  (packaged in Fedora 43+ and EPEL; on Arch it is AUR-only)"
+  echo "  Or skip the build entirely and pull a prebuilt image:"
+  echo "    sudo bash scripts/fetch-rootfs.sh"
   exit 1
+fi
+# debootstrap unpacks .debs with dpkg-deb OR ar, and verifies the archive release
+# signature with gpgv. A Debian/Ubuntu host has all three; others need binutils
+# (ar) and gnupg2 (gpgv).
+if ! command -v dpkg-deb &>/dev/null && ! command -v ar &>/dev/null; then
+  echo "ERROR: debootstrap needs dpkg-deb or ar to unpack .debs." >&2
+  echo "  Install it with: sudo $(pkg_install_hint binutils)" >&2
+  exit 1
+fi
+if ! command -v gpgv &>/dev/null; then
+  echo "WARNING: gpgv is missing, so the Ubuntu archive signature cannot be verified."
+  echo "  Install it with: sudo $(pkg_install_hint gnupg2)"
+  echo "  ...or re-run with DEBOOTSTRAP_OPTS=--no-check-gpg to say so explicitly"
+  echo "  (unverified base image, fetched over plain HTTP)."
 fi
 
 echo "==> Building devbox rootfs (${ROOTFS_SIZE})"
@@ -36,10 +65,50 @@ if [ -f "$BUILD_DIR/.step1-done" ]; then
 else
   echo ""
   echo "==> [1/6] Debootstrap Ubuntu 24.04 (noble)..."
+  # shellcheck disable=SC2086  # deliberate word splitting: extra flags, space-separated
   sudo debootstrap \
     --components=main,universe \
     --include=systemd,systemd-sysv,curl,ca-certificates,iproute2,dbus \
+    ${DEBOOTSTRAP_OPTS:-} \
     noble "$BUILD_DIR" http://archive.ubuntu.com/ubuntu
+
+  # Give the chroot steps (2-4, all apt-get) a resolver they can actually use.
+  # Fedora/RHEL ships /etc/resolv.conf as a symlink to
+  # /run/systemd/resolve/stub-resolv.conf pointing at 127.0.0.53, and neither the
+  # path nor the stub listener exists inside a fresh target tree — without this
+  # the build dies at step 2 with "Temporary failure resolving
+  # archive.ubuntu.com". Written as a REGULAR file on purpose: step 6 swaps in a
+  # boot-time materializer, and symlinking to /proc/net/pnp here is the exact
+  # c-ares bug documented in CLAUDE.md.
+  if ! grep -qE '^nameserver[[:space:]]+[^[:space:]]' "$BUILD_DIR/etc/resolv.conf" 2>/dev/null ||
+    grep -qE '^nameserver[[:space:]]+127\.' "$BUILD_DIR/etc/resolv.conf" 2>/dev/null; then
+    # First real (non-loopback) nameserver we can find. The stub file only ever
+    # holds 127.0.0.53, so also read systemd-resolved's UPLINK file, which is
+    # where a Fedora host's actual servers live; only then fall back to a public
+    # resolver (which won't resolve names on a network with split DNS).
+    nameserver=""
+    for candidate in "$(readlink -f /etc/resolv.conf 2>/dev/null || true)" \
+      /run/systemd/resolve/resolv.conf; do
+      if [ -n "$candidate" ] && [ -r "$candidate" ]; then
+        # `|| true` is load-bearing: this script runs under `set -euo pipefail`,
+        # and a resolv.conf with no usable nameserver line makes grep exit 1,
+        # which through pipefail would abort the build here. That is exactly the
+        # systemd-resolved stub case we are trying to survive.
+        nameserver="$(grep -hoE '^nameserver[[:space:]]+[^[:space:]]+' "$candidate" 2>/dev/null |
+          awk '$2 !~ /^127\./ { print $2; exit }' || true)"
+        if [ -n "$nameserver" ]; then
+          break
+        fi
+      fi
+    done
+    # rm BEFORE writing: `tee` follows an existing symlink out of the target
+    # tree, which as root would clobber the host's
+    # /run/systemd/resolve/stub-resolv.conf instead of the guest's file.
+    sudo rm -f "$BUILD_DIR/etc/resolv.conf"
+    printf 'nameserver %s\n' "${nameserver:-1.1.1.1}" | sudo tee "$BUILD_DIR/etc/resolv.conf" >/dev/null
+    echo "  Wrote $BUILD_DIR/etc/resolv.conf (nameserver ${nameserver:-1.1.1.1})"
+  fi
+
   sudo touch "$BUILD_DIR/.step1-done"
 fi
 
@@ -80,10 +149,10 @@ fi
 
 # --- Step 4: Install Python + build tooling ---
 if [ -f "$BUILD_DIR/.step4-done" ]; then
-  echo "==> [4/6] Python + build tooling already installed, skipping"
+  echo "==> [4/6] Python + Go + build tooling already installed, skipping"
 else
   echo ""
-  echo "==> [4/6] Installing Python 3, pip, venv, and build tooling..."
+  echo "==> [4/6] Installing Python 3, Go ${GO_VERSION}, micro, and build tooling..."
 
   # debootstrap only enables "main"; python3-pip/venv live in "universe".
   # Write a full sources.list (main + universe, with the updates/security
@@ -94,12 +163,24 @@ deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe mult
 deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse
 APT
 
-  sudo chroot "$BUILD_DIR" bash -c '
+  # The package list lives in one file, scripts/guest-packages.txt, and is the
+  # same list `sandbox rootfs-pkgs` applies to an image that already exists. So
+  # "add a package to the VM" means appending one line there, then either
+  # rebuilding (this script) or patching the current image (rootfs-pkgs).
+  PKG_LIST="$(dirname "${BASH_SOURCE[0]}")/guest-packages.txt"
+  if [ ! -s "$PKG_LIST" ]; then
+    echo "ERROR: guest package list missing at $PKG_LIST"
+    exit 1
+  fi
+  EXTRA_PKGS="$(grep -vE '^[[:space:]]*(#|$)' "$PKG_LIST" | tr '\n' ' ')"
+
+  # GO_VERSION/EXTRA_PKGS go through `env` because sudo's env_reset would drop
+  # them before chroot ever saw it. $EXTRA_PKGS is expanded unquoted inside the
+  # chroot script on purpose: one word per package, from a local file.
+  sudo env GO_VERSION="$GO_VERSION" EXTRA_PKGS="$EXTRA_PKGS" chroot "$BUILD_DIR" bash -c '
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y \
-      python3 python3-pip python3-venv build-essential git make openssh-server sudo \
-      htop vim nano tmux jq ripgrep fd-find bat tree ncdu wget unzip zip less rsync man-db
+    apt-get install -y $EXTRA_PKGS
 
     # GitHub CLI from the official apt repo (not in the Ubuntu archive). The
     # keyring is a plain .gpg referenced via signed-by, so no gpg import needed.
@@ -117,11 +198,26 @@ APT
     ln -sf /usr/bin/fdfind /usr/local/bin/fd
     ln -sf /usr/bin/batcat /usr/local/bin/bat
 
+    # Go from go.dev. The tarball needs no GOROOT env var: the go binary
+    # resolves its own symlink, so /usr/local/bin/go finds /usr/local/go. The
+    # profile.d file is for login shells that expect /usr/local/go/bin on PATH
+    # (sandboxd runs exec and the pty as `bash -l`, so it is sourced there).
+    curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+    gzip -t /tmp/go.tgz
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tgz
+    rm -f /tmp/go.tgz
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+    echo "export PATH=\"\$PATH:/usr/local/go/bin\"" > /etc/profile.d/golang.sh
+
     python3 --version
     pip3 --version
     gcc --version | head -1
     git --version
     gh --version | head -1
+    go version
+    micro --version
   '
 
   # Create the unprivileged identity used by exec, files, PTY, and SSH. Keep

@@ -8,7 +8,10 @@
 # earlier than this ?=, so it still wins).
 REMOTE_USER ?= $(if $(USER),$(USER),$(shell id -un 2>/dev/null))
 REMOTE_HOST ?= machine
-REMOTE_DIR  ?= sandbox
+# Remote checkout dir, i.e. /home/$(REMOTE_USER)/$(REMOTE_DIR). All the remote-*
+# targets cd there, and nothing else on the host is dir-name dependent: server
+# state lives under /var/lib/sandbox and /opt/fc per configs/devbox.json.
+REMOTE_DIR  ?= jack-in-box
 GOARCH      ?= amd64
 
 REMOTE      := $(REMOTE_USER)@$(REMOTE_HOST)

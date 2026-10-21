@@ -9,7 +9,10 @@
 # Restore on a fresh host (recreates the sparse holes), then bake the agent:
 #   tar --sparse -I 'zstd -T0' -xf devbox-rootfs.tar.zst -C /opt/fc
 #   sudo ./sandbox install-agent --agent ./sandboxd
+# scripts/fetch-rootfs.sh does both of those steps for you, checksum included.
 set -euo pipefail
+
+. "$(dirname "${BASH_SOURCE[0]}")/pkg-hint.sh"
 
 ASSET_DIR="${ASSET_DIR:-/opt/fc}"
 ROOTFS_PATH="${ROOTFS_PATH:-${ASSET_DIR}/devbox-rootfs.ext4}"
@@ -24,7 +27,7 @@ fi
 
 for tool in tar zstd sha256sum; do
   if ! command -v "$tool" &>/dev/null; then
-    echo "ERROR: '$tool' is not installed (try: sudo apt-get install -y $tool)" >&2
+    echo "ERROR: '$tool' is not installed (try: sudo $(pkg_install_hint "$tool"))" >&2
     exit 1
   fi
 done

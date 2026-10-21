@@ -21,14 +21,14 @@ scripts.
 
 ```bash
 git clone https://github.com/ayush6624/sandbox.git && cd sandbox
-make sync REMOTE_HOST=your-server        # builds linux/amd64 + rsyncs to ~/sandbox
+make sync REMOTE_HOST=your-server        # builds linux/amd64 + rsyncs to ~/jack-in-box
 ```
 
 ### 2. One-time host setup
 
 ```bash
 ssh you@your-server
-cd ~/sandbox
+cd ~/jack-in-box
 sudo bash scripts/setup-firecracker.sh      # install the firecracker binary
 sudo bash scripts/setup-kernel.sh           # download the guest kernel
 
@@ -72,7 +72,7 @@ Run it under systemd for production (`Restart=always`; see
 
 ```bash
 make sync REMOTE_HOST=your-server                  # new binaries
-ssh you@your-server 'cd ~/sandbox && sudo ./sandbox install-agent --agent ./sandboxd'
+ssh you@your-server 'cd ~/jack-in-box && sudo ./sandbox install-agent --agent ./sandboxd'
 # restart the server — it rebuilds the golden snapshot from the new base image
 ```
 

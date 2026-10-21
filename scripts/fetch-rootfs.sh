@@ -15,6 +15,8 @@
 #   ASSET_DIR=/opt/fc             where the image is extracted
 set -euo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/pkg-hint.sh"
+
 ROOTFS_URL="${ROOTFS_URL:-${1:-https://sandbox.ayushgoyal.dev/images/devbox-rootfs.tar.zst}}"
 ASSET_DIR="${ASSET_DIR:-/opt/fc}"
 ROOTFS_PATH="${ROOTFS_PATH:-${ASSET_DIR}/devbox-rootfs.ext4}"
@@ -29,7 +31,10 @@ fi
 
 for tool in curl tar zstd sha256sum; do
   if ! command -v "$tool" &>/dev/null; then
-    echo "ERROR: '$tool' is not installed (try: sudo apt-get install -y $tool)" >&2
+    # Hint comes from the host's /etc/os-release: this path is the
+    # distro-agnostic one (no debootstrap), so a Fedora host should not be told
+    # to run apt-get.
+    echo "ERROR: '$tool' is not installed (try: sudo $(pkg_install_hint "$tool"))" >&2
     exit 1
   fi
 done
