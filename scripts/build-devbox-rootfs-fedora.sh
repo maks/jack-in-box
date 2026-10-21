@@ -440,7 +440,14 @@ chroot "$BUILD_DIR" bash -c '
 '
 # /etc/machine-id empty (not absent) so systemd regenerates one per boot; a
 # BAKED machine-id would make every clone look like the same host to journald.
-: >"$BUILD_DIR/etc/machine-id"
+#
+# The mode is explicit because it MUST be world-readable and this script may run
+# under a restrictive umask (sudo preserving one, or a caller that set umask 077).
+# A 0600 machine-id does not stop systemd from booting -- it writes as root -- but
+# Fedora's shell startup reads it, so every command in every non-root shell prints
+# "bash: /etc/machine-id: Permission denied" on the way to the prompt.
+printf '' >"$BUILD_DIR/etc/machine-id"
+chmod 0644 "$BUILD_DIR/etc/machine-id"
 
 # Unmount /dev,/proc,/sys BEFORE mkfs so the image gets an empty /dev.
 cleanup_mounts
