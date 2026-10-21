@@ -60,7 +60,7 @@ fi
 if ! "$BIN" write "$id" /home/sandbox/hello/go.mod >/dev/null <<'GOMOD'
 module hello
 
-go 1.25
+go 1.22
 GOMOD
 then
   echo "  write go.mod failed"
