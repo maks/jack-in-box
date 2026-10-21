@@ -370,12 +370,27 @@ UNIT
     systemctl enable sandbox-resolvconf.service 2>/dev/null || true
   '
 
-  # resolved/networkd would clobber that file and fight the kernel ip= config.
+  # Any userspace network manager would clobber /etc/resolv.conf and fight the
+  # kernel ip= config. NetworkManager is the dangerous one on a Fedora guest: the
+  # @core group installs AND enables it (the Ubuntu base ships no such thing), and
+  # on activation it flushes the address the kernel assigned from ip= and asks
+  # DHCP for a replacement. There is no DHCP server on br-fc, so eth0 is left with
+  # no usable IPv4: the VM boots perfectly, systemd is healthy, and the host can
+  # never reach the agent on :8090 -- a create that dies at the readiness gate
+  # after 60 s with "agent never became ready".
+  #
+  # mask, not just disable: NM also activates on demand over dbus, so removing the
+  # wants-symlink alone does not keep it off a running system.
   chroot "$BUILD_DIR" bash -c '
     systemctl disable systemd-networkd.service 2>/dev/null || true
     systemctl disable systemd-resolved.service 2>/dev/null || true
     systemctl mask systemd-networkd.service 2>/dev/null || true
     systemctl mask systemd-resolved.service 2>/dev/null || true
+    for u in NetworkManager.service NetworkManager-dispatcher.service \
+             NetworkManager-wait-online.service nm-state-sync.service; do
+      systemctl disable "$u" 2>/dev/null || true
+      systemctl mask "$u" 2>/dev/null || true
+    done
   '
 
   echo "sandbox" >"$BUILD_DIR/etc/hostname"
