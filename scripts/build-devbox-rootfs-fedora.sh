@@ -417,7 +417,11 @@ chroot "$BUILD_DIR" bash -c '
   "$D" clean all
   rm -rf /var/cache/dnf /var/cache/libdnf5 /var/log/dnf* /var/log/hawkey* /tmp/* /var/tmp/*
   rm -f /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null || true
-  : > /var/log/journal 2>/dev/null || true
+  # /var/log/journal is a DIRECTORY on Fedora (persistent journald storage), so
+  # truncating it is the "Is a directory" error the old redirect printed; vacuum its
+  # contents instead so a cloned guest does not boot carrying the logs of the image
+  # build itself. Both globs are best-effort: neither dir exists on a minimal tree.
+  rm -rf /var/log/journal/* /var/log/private/* 2>/dev/null || true
 '
 # /etc/machine-id empty (not absent) so systemd regenerates one per boot; a
 # BAKED machine-id would make every clone look like the same host to journald.
