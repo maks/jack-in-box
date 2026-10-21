@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a custom rootfs with Node.js, Go, Python, common build tooling, popular
 # CLI utilities and editors (htop, jq, ripgrep, gh, micro, …), and AI coding
-# agents (Claude Code, Codex).
+# the pi coding agent.
 # A bare sandbox — no app server is started on boot; use exec/files (sandboxd)
 # to run whatever you like. Must run on Linux as root (uses debootstrap + chroot).
 # Supports resuming — re-run the script and it skips completed steps.
@@ -132,17 +132,22 @@ if [ -f "$BUILD_DIR/.step3-done" ]; then
   echo "==> [3/6] pnpm + TypeScript + AI CLIs already installed, skipping"
 else
   echo ""
-  echo "==> [3/6] Installing pnpm, TypeScript, Claude Code, Codex..."
-  # Claude Code (@anthropic-ai/claude-code) and OpenAI Codex (@openai/codex) are
-  # global npm CLIs. Users supply their own API keys/logins at runtime — nothing
-  # secret is baked in. Codex ships a per-platform native binary via npm optional
-  # deps; the linux/amd64 build host resolves the matching linux-x64 package.
+  echo "==> [3/6] Installing pnpm, TypeScript and the pi coding agent..."
+  # pi (@earendil-works/pi-coding-agent, binary `pi`) is a global npm CLI, like
+  # pnpm and tsc. Users bring their own model credentials at runtime — nothing
+  # secret is baked in. --ignore-scripts is what upstream documents for a global
+  # install: pi needs no dependency lifecycle scripts, and skipping them keeps an
+  # npm postinstall hook from running arbitrary code inside the image factory.
+  # NB pi requires Node >= 22.19; step 2 pins Node 22 from NodeSource, which
+  # satisfies it, and the `node --version` below is what catches a stale stream.
+  # Deliberately NOT installed: @anthropic-ai/claude-code and @openai/codex —
+  # ~250 MB of image for agents this project does not use.
   sudo chroot "$BUILD_DIR" bash -c '
-    npm install -g pnpm typescript @anthropic-ai/claude-code @openai/codex
+    npm install -g --ignore-scripts pnpm typescript @earendil-works/pi-coding-agent
+    node --version
     pnpm --version
     tsc --version
-    claude --version || true
-    codex --version || true
+    pi --version || true
   '
   sudo touch "$BUILD_DIR/.step3-done"
 fi

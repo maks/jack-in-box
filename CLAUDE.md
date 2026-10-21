@@ -549,8 +549,9 @@ degrades to a failed wake, never a serve crash. See docs/uffd-roadmap.md.
 format, so symlinking the two looks like the clean way to honor the host config
 without baking it in. It isn't: `/proc` files report `st_size=0`, and any resolver
 that sizes a file before reading it sees an EMPTY config. c-ares — which backs
-Node's `dns.resolve*`/undici, and therefore Claude Code's "Checking
-connectivity..." probe — is one of those; finding no nameservers it falls back to
+Node's `dns.resolve*`/undici, and therefore the startup connectivity probes of a
+Node-based coding agent like the pi CLI (first hit via Claude Code) — is one of
+those; finding no nameservers it falls back to
 `127.0.0.1:53`, where nothing listens. The symptom is DNS that works for
 curl/git/npm/python (glibc reads the symlink fine) and fails for anything
 c-ares-based: an "unstable internet" that depends on which tool you reach for,

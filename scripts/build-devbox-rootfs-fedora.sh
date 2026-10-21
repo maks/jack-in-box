@@ -172,14 +172,19 @@ if [[ -f "$BUILD_DIR/.step3-done" ]]; then
   echo "==> [3/6] pnpm + TypeScript + AI CLIs already installed, skipping"
 else
   echo ""
-  echo "==> [3/6] Installing pnpm, TypeScript, Claude Code, Codex..."
-  # Users supply their own API keys/logins at runtime; nothing secret is baked in.
+  echo "==> [3/6] Installing pnpm, TypeScript and the pi coding agent..."
+  # pi (@earendil-works/pi-coding-agent, binary `pi`) is a global npm CLI. Users
+  # bring their own model credentials at runtime; nothing secret is baked in.
+  # --ignore-scripts is upstream's documented global-install flag (pi needs no
+  # lifecycle scripts). Requires Node >= 22.19, which step 2's NodeSource 22
+  # satisfies. Claude Code and Codex are deliberately not installed — ~250 MB of
+  # image for agents this project does not use.
   chroot "$BUILD_DIR" bash -c '
-    npm install -g pnpm typescript @anthropic-ai/claude-code @openai/codex
+    npm install -g --ignore-scripts pnpm typescript @earendil-works/pi-coding-agent
+    node --version
     pnpm --version
     tsc --version
-    claude --version || true
-    codex --version || true
+    pi --version || true
   '
   touch "$BUILD_DIR/.step3-done"
 fi

@@ -10,7 +10,7 @@
 #
 # Deliberately absent (installed elsewhere, same as the Ubuntu image):
 #   - nodejs 22 — NodeSource RPM repo (step 2), not Fedora's module stream.
-#   - pnpm, typescript, @anthropic-ai/claude-code, @openai/codex — npm globals
+#   - pnpm, typescript, pi (@earendil-works/pi-coding-agent) — npm globals
 #     (step 3).
 #   - sandboxd — the in-guest agent, baked by `sandbox install-agent`.
 #   - kernel — Firecracker boots a host-side vmlinux; no guest kernel.
