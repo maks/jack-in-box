@@ -46,8 +46,11 @@ if [[ -f "$ROOTFS_PATH" ]]; then
   exit 0
 fi
 
-if ! command -v dnf >/dev/null 2>&1; then
-  echo "ERROR: dnf not found. This builder needs a Fedora/RHEL host." >&2
+# dnf5 is the default on recent Fedora and does not necessarily ship a `dnf`
+# symlink, so resolve whichever the host actually has and use it everywhere.
+DNF="$(command -v dnf 2>/dev/null || command -v dnf5 2>/dev/null || true)"
+if [[ -z "$DNF" ]]; then
+  echo "ERROR: neither dnf nor dnf5 found. This builder needs a Fedora/RHEL host." >&2
   echo "  On a Debian/Ubuntu host use: sudo bash scripts/build-devbox-rootfs.sh" >&2
   echo "  Or skip building entirely and pull a prebuilt image: sudo bash scripts/fetch-rootfs.sh" >&2
   exit 1
@@ -56,6 +59,20 @@ if [[ ! -s "$PKG_LIST" ]]; then
   echo "ERROR: guest package list missing at $PKG_LIST" >&2
   exit 1
 fi
+
+# One host-side --installroot transaction, retrying without the SELinux excludes.
+# selinux-policy-targeted is a MANDATORY member of @core on some releases, so
+# excluding it is a hard dependency error rather than a smaller image; the
+# fallback keeps the build going and step 5's SELINUX=disabled is what actually
+# matters (an enforcing policy would deny sshd + sandboxd, because mkfs.ext4 -d
+# cannot apply RPM file_contexts to the tree).
+dnf_installroot() {
+  if ! "$DNF" --installroot="$BUILD_DIR" --releasever="$REL" -y "${DNF_OPTS[@]}" "$@"; then
+    echo "  ^^ retrying without the SELinux excludes (mandatory @core member on some releases)" >&2
+    "$DNF" --installroot="$BUILD_DIR" --releasever="$REL" -y \
+      --setopt=install_weak_deps=False --setopt=tsflags=nocontexts "$@"
+  fi
+}
 if [[ "$(id -u)" != "0" ]]; then
   echo "needs root (dnf --installroot, mknod, mkfs)" >&2
   exit 1
@@ -118,10 +135,8 @@ else
   # same as every other guest here. Group and package installs are separate
   # commands because dnf5 (the default on recent Fedora) spells the group form as
   # `group install`, which cannot also take loose packages.
-  dnf --installroot="$BUILD_DIR" --releasever="$REL" -y "${DNF_OPTS[@]}" \
-    group install core
-  dnf --installroot="$BUILD_DIR" --releasever="$REL" -y "${DNF_OPTS[@]}" \
-    install dnf dnf-plugins-core systemd curl ca-certificates iproute \
+  dnf_installroot group install core
+  dnf_installroot install dnf dnf-plugins-core systemd curl ca-certificates iproute \
     procps-ng util-linux passwd shadow-utils which tar xz gzip findutils sudo \
     openssh-server openssh-clients
 
@@ -139,9 +154,13 @@ else
   echo "==> [2/6] Installing Node.js 22 LTS..."
   # NodeSource RPM rather than Fedora's nodejs module, so the guest gets the same
   # pinned major as the Ubuntu image and the docs ("Node 22") either way.
+  # The installroot gets its own resolver line below, and the same dnf-or-dnf5
+  # choice: a Fedora 44 tree ships dnf5, and `dnf` is only a compatibility alias.
   chroot "$BUILD_DIR" bash -c '
+    set -e
+    D="$(command -v dnf || command -v dnf5)"
     curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
-    dnf install -y nodejs
+    "$D" install -y nodejs
     node --version
     npm --version
   '
@@ -177,8 +196,8 @@ else
   EXTRA_PKGS="$(grep -vE '^[[:space:]]*(#|$)' "$PKG_LIST" | tr '\n' ' ')"
   chroot "$BUILD_DIR" bash -c "
     set -e
-    export DEBIAN_FRONTEND=noninteractive
-    dnf -y install $EXTRA_PKGS
+    D=\$(command -v dnf || command -v dnf5)
+    \"\$D\" -y install $EXTRA_PKGS
     # fd/bat keep their conventional names on Fedora (Ubuntu calls them
     # fdfind/batcat), so no compatibility symlinks are needed here.
     python3 --version
@@ -359,7 +378,8 @@ fi
 echo ""
 echo "==> [6/6] Building ext4 image (${ROOTFS_SIZE})..."
 chroot "$BUILD_DIR" bash -c '
-  dnf clean all
+  D="$(command -v dnf || command -v dnf5 || command -v microdnf)"
+  "$D" clean all
   rm -rf /var/cache/dnf /var/cache/libdnf5 /var/log/dnf* /var/log/hawkey* /tmp/* /var/tmp/*
   rm -f /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null || true
   : > /var/log/journal 2>/dev/null || true

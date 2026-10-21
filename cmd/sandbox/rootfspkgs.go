@@ -356,10 +356,10 @@ func installScript(mgr string) string {
 	switch mgr {
 	case "apt":
 		return "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends "
-	case "microdnf":
-		return "microdnf -y install "
-	default: // dnf, dnf5
-		return "dnf -y install "
+	default:
+		// Resolved inside the chroot, not here: recent Fedora ships dnf5 and `dnf`
+		// is only an alias, and a minimal image may have microdnf alone.
+		return `d=$(command -v dnf || command -v dnf5 || command -v microdnf); "$d" -y install `
 	}
 }
 
@@ -367,7 +367,8 @@ func cleanScript(mgr string) string {
 	if mgr == "apt" {
 		return "apt-get clean; rm -rf /var/lib/apt/lists/*"
 	}
-	return "dnf clean all 2>/dev/null || microdnf clean all; rm -rf /var/cache/dnf /var/cache/libdnf5"
+	return `d=$(command -v dnf || command -v dnf5 || command -v microdnf); "$d" clean all; ` +
+		"rm -rf /var/cache/dnf /var/cache/libdnf5"
 }
 
 func installedCheck(mgr, pkg string) string {
