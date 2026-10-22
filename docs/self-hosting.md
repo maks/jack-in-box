@@ -80,6 +80,37 @@ ssh you@your-server 'cd ~/jack-in-box && sudo ./sandbox install-agent --agent ./
 golden snapshot on the next restart. If you skip the restart, creates keep
 working from the old snapshot.
 
+### Baking your own files into the base image
+
+A sandbox's own files die with it, so anything a tool needs on its first run —
+provider config, git identity, dotfiles — belongs in the base image. Three tools,
+by what they change:
+
+| Change | Tool |
+| --- | --- |
+| distro packages (apt/dnf), Go toolchain | `sandbox rootfs-pkgs <pkg...> [--go]` |
+| the in-guest agent | `sandbox install-agent --agent ./sandboxd` |
+| arbitrary files at an arbitrary path | `scripts/bake-into-image.sh <src-dir> <guest-path> [uid:gid]` |
+
+```bash
+sudo ./sandbox stop-server
+sudo ./scripts/bake-into-image.sh ~/pi-guest /home/sandbox/.pi/agent  # owner defaults to 1000 (sandbox)
+sudo ./sandbox serve --config configs/devbox.json                    # rebuilds the golden (~1 min)
+```
+
+Two things that read as failures if you forget them: the change reaches only
+sandboxes created **afterwards** (older ones hold their own copy, and a hibernated
+one has a memory diff anchored to the old base), and a `serve` that was already
+running never sees it — the script refuses to run while one is up.
+
+Config baked for a *guest* is not config copied from your laptop verbatim. A guest
+resolves nothing over mDNS, so `http://host.local:PORT` and
+`http://127.0.0.1:PORT` are both wrong: the first does not resolve, the second
+points at the guest itself. Use a routable LAN address, and note the guest's
+`nameservers` come from the `nameservers` key in the config — public resolvers for
+a generic host, since a datacenter-only resolver (the fleet's Hetzner addresses)
+yields `EAI_AGAIN` everywhere else.
+
 ## Multi-host fleet
 
 Scale horizontally by running a **gateway** in front of N identical hosts.
