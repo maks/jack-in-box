@@ -18,6 +18,14 @@
 # Supports resuming: completed steps are marked in $BUILD_DIR and skipped.
 set -euo pipefail
 
+# Modes in the IMAGE are decided by whatever umask the invoking shell happened to
+# have (sudo preserves it), and a restrictive one produces a rootfs that boots and
+# works for root but is broken for the guest user: npm's global tree lands
+# drwx------ so `pi`, `pnpm` and `tsc` are installed yet invisible to a non-root
+# shell, and a truncated /etc/machine-id comes out unreadable. Pinned here rather
+# than left to the caller.
+umask 022
+
 ASSET_DIR="${ASSET_DIR:-/opt/fc}"
 ROOTFS_PATH="${ROOTFS_PATH:-${ASSET_DIR}/devbox-rootfs.ext4}"
 ROOTFS_SIZE="${ROOTFS_SIZE:-10G}"

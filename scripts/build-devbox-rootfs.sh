@@ -7,6 +7,11 @@
 # Supports resuming — re-run the script and it skips completed steps.
 set -euo pipefail
 
+# See the note in build-devbox-rootfs-fedora.sh: image file modes inherit the
+# invoking shell's umask (sudo preserves it), and a restrictive one ships a rootfs
+# that works for root but breaks the guest user's tools.
+umask 022
+
 . "$(dirname "${BASH_SOURCE[0]}")/pkg-hint.sh"
 
 ASSET_DIR="${ASSET_DIR:-/opt/fc}"
