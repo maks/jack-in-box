@@ -1,0 +1,68 @@
+# Guest packages for the FEDORA image — THE list for
+# scripts/build-devbox-rootfs-fedora.sh (guest-packages.txt is the Ubuntu one).
+#
+# This is where the software baked into every VM is declared: append a name here
+# and it exists in the guest at boot, no per-sandbox install. `sandbox
+# rootfs-pkgs` applies the same idea to an image you already have (it detects
+# apt vs dnf from the mounted tree).
+#
+# One package per line; blank lines and `#` comments are ignored.
+#
+# Deliberately absent (installed elsewhere, same as the Ubuntu image):
+#   - nodejs 22 — NodeSource RPM repo (step 2), not Fedora's module stream.
+#   - pnpm, typescript, pi (@earendil-works/pi-coding-agent) — npm globals
+#     (step 3).
+#   - sandboxd — the in-guest agent, baked by `sandbox install-agent`.
+#   - kernel — Firecracker boots a host-side vmlinux; no guest kernel.
+
+# editors. Fedora ships `vim-minimal` (vi) in @core; vim-enhanced is the full
+# vim, and micro is in the official archive (no EPEL needed).
+vim-enhanced
+nano
+micro
+
+# process / file inspection. Fedora keeps the conventional `fd` and `bat` names
+# (Ubuntu calls them fd-find / bat), and ships gh + ripgrep itself, so unlike the
+# Ubuntu image there is no third-party repo or keyring in play here.
+htop
+jq
+ripgrep
+fd-find
+bat
+tree
+ncdu
+less
+man-db
+gh
+
+# transfer + archive
+wget
+unzip
+zip
+rsync
+
+# multiplexing
+tmux
+
+# python
+python3
+python3-pip
+python3-setuptools
+
+# build toolchain — the `build-essential` equivalent. Needed by anything that
+# compiles from source inside a sandbox, including npm native addons (node-gyp).
+gcc
+gcc-c++
+make
+pkgconf-pkg-config
+patch
+autoconf
+automake
+libtool
+git
+
+# Go from the distro. Fedora's golang tracks current releases, so the go.dev
+# tarball workaround the Ubuntu image needs (noble pins Go 1.22, which refuses a
+# newer `go` directive in go.mod) does not apply here. Set GO_VERSION to override
+# with a pinned tarball anyway.
+golang

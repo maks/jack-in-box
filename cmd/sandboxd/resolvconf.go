@@ -18,8 +18,9 @@ const (
 // honor whatever nameservers the host config set without baking them into the
 // image. glibc reads that happily, but /proc files report st_size=0, and any
 // resolver that sizes the file before reading it sees an empty config. c-ares —
-// which backs Node's dns.resolve*/undici, and therefore Claude Code's
-// "Checking connectivity..." probe — is one of those: it finds no nameservers
+// which backs Node's dns.resolve*/undici, and therefore the startup connectivity
+// probes of a Node-based coding agent like the pi CLI (first hit via Claude
+// Code) — is one of those: it finds no nameservers
 // and falls back to 127.0.0.1:53, where nothing listens. The symptom is DNS
 // that works for curl/git/npm/python (glibc) and fails for anything c-ares
 // based, i.e. an "internet connection" that looks intermittently broken
