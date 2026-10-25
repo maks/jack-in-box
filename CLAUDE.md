@@ -56,6 +56,14 @@ The non-serve commands are thin HTTP clients over the Unix socket. They need
 sudoers rule below. `install-agent` and `stop-server` are subcommands (not
 scripts) specifically so they're covered by that NOPASSWD rule.
 
+Root is needed for exactly that one thing — the socket — so pointing the CLI at
+the TCP listener (`serve --listen 127.0.0.1:<port> --token <tok>`, then
+`SANDBOX_API_URL` + `SANDBOX_API_KEY`) needs no privilege at all. The smoke
+scripts (`scripts/smoke-devbox.sh`, `scripts/go-hello.sh`) honour those two vars
+and skip their root probe when set; their probe tests `EUID -ne 0`, not `-ne 1`
+(the inverted form refused plain `sudo` and only passed for uid 1, so it rejected
+exactly the users it was written for).
+
 `serve` is self-healing on startup: it runs `EnsureNetwork` (bridge, sysctls,
 NAT — survives host reboots), reconciles stale state (kills orphaned
 firecracker processes, removes stale taps/rootfs/legacy-DNAT/DB rows), and
@@ -244,7 +252,15 @@ sudo bash scripts/setup-kernel.sh           # download Firecracker-compatible ke
 sudo bash scripts/build-devbox-rootfs.sh    # build an Ubuntu guest image (resumable, ~5 min; needs debootstrap)
 sudo bash scripts/build-devbox-rootfs-fedora.sh  # same artifact built from a Fedora guest tree (native dnf --installroot, no debootstrap)
 sudo ./sandbox install-agent             # bake sandboxd into the rootfs (loop-mount, fast)
+sudo scripts/bake-into-image.sh ./pi-guest /home/sandbox/.pi/agent  # arbitrary files at a guest path (owner defaults to 1000:1000 = sandbox)
 ```
+
+The three base-image mutators, by what they change: `rootfs-pkgs` for distro
+packages + Go, `install-agent` for the in-guest agent, `bake-into-image.sh` for
+anything else (provider config, git identity, dotfiles). All three bump the base
+rootfs mtime and therefore dirty the golden; see the "Three ways to change what a
+sandbox boots with" note below, and `docs/self-hosting.md` for the user-facing
+version.
 
 `setup-network.sh` still exists but is no longer required: `serve` runs
 `provisioner.EnsureNetwork()` on every startup, which idempotently creates the
@@ -307,7 +323,7 @@ internal/vm/
   machine_stub.go     Non-Linux stub matching the Linux signatures
   options.go          RunOptions + RuntimeConfig
 configs/devbox.json   Default config (pools, bridge, paths, vCPUs/mem)
-scripts/              Host setup shell scripts
+scripts/              Host setup scripts + guest image builders (ubuntu, fedora), bake-into-image.sh, smoke/go-hello
 ```
 
 
@@ -1089,7 +1105,7 @@ dry runs. Server passes `false`.
 After `/logger` is bootstrapped, firecracker writes most logs to its log FIFO (drained by
 the SDK, never persisted). For deep-dive debugging, switch `LogFifo` to a regular file path.
 
-- **Two ways to change what a sandbox boots with, and both dirty the golden.**
+- **Three ways to change what a sandbox boots with, and all three dirty the golden.**
 Software must be in the base image to exist at boot: a sandbox's own files live
 in its copy of that image and die with it, so installing inside a sandbox is
 never the fix. `scripts/build-devbox-rootfs.sh` builds an Ubuntu image from scratch
@@ -1101,11 +1117,30 @@ distro-agnostic; the declared sets are `scripts/guest-packages.txt` and
 `scripts/guest-packages-fedora.txt`. The Fedora image installs micro/gh/ripgrep/current
 Go from the Fedora archive (no keyrings, no Go tarball) and ships SELinux disabled,
 because `mkfs.ext4 -d` cannot apply RPM `file_contexts` and an enforcing policy would
-deny sshd + sandboxd. `sandbox rootfs-pkgs <pkg...>
+deny sshd + sandboxd. **`dnf --installroot` needs `--use-host-config` on dnf5 and
+must NOT pass it on dnf4**: dnf5 refuses to read host repo config when an
+installroot is given, so an empty installroot resolves ZERO repositories and step 1
+dies on `No match for argument: core` + "No repositories were loaded from the
+installroot". Fedora ships `dnf` as dnf5 on some releases and dnf4 on others, and
+neither the binary name nor the `--version` banner is reliable (the banner needs a
+readable `/etc/dnf/dnf.conf`; dnf5 is aliased under several names), so the builder
+**probes `"$DNF" --use-host-config --version`** — a rejected option exits non-zero,
+which is the same question the build actually asks — with `DNF_USE_HOST_CONFIG=0|1`
+as the escape hatch and the resolution printed. `rootfs-pkgs` needs no such gate: it
+chroots and runs the package manager *inside* the guest, so it never passes
+`--installroot`. `sandbox rootfs-pkgs <pkg...>
 [--go]` edits the existing image in place — loop-mount + chroot + the package manager
 it detects from the mounted tree (apt-get / dnf / dnf5 / microdnf), which also picks
 the matching default list — no debootstrap, ~1 minute, which is the path for a
-working box. Either way the
+working box. `scripts/bake-into-image.sh <src-dir> <guest-absolute-path> [uid:gid]`
+is the third primitive, for what neither covers: arbitrary files at an arbitrary
+path (pi's provider list, git identity, ssh config, dotfiles). It `tar`-pipes (so a
+symlink or special file is copied as itself rather than followed out of the tree),
+chowns to `1000:1000` — the `sandbox` user — and NORMALIZES modes rather than
+inheriting them, and it **refuses to run while a `sandbox serve` is up**, because a
+running server holds clones and re-reads the base on every golden load, so a bake it
+never sees is a silent no-op. Its effect reaches only sandboxes created afterwards.
+Either way the
 mount bumps the base rootfs mtime, and `goldenUsable` keys golden validity on
 (base mtime, size), so the next `serve` cold-boots one throwaway to rebuild the
 golden; hibernated sandboxes have a memory diff anchored to the old base and
@@ -1117,7 +1152,37 @@ the image had after the last agent bake, so skipping it means a later
 guest is the go.dev tarball NOT `golang-go`: noble ships 1.22, which refuses a
 `go.mod` with a newer `go` directive, so any copied project fails its first build;
 Fedora's `golang` tracks current releases, so the Fedora image uses the distro
-package and `rootfs-pkgs --go` there installs `golang` rather than a tarball.
+package and `rootfs-pkgs --go` there installs `golang` rather than a tarball. The
+directive in `go.mod` is a **minimum** toolchain version, not the version in use, so
+anything that compiles inside a guest must declare the LOWEST supported guest Go —
+`scripts/go-hello.sh` declares `go 1.22` for exactly this reason; declaring 1.25 made
+the smoke test fail with a toolchain error on noble and read as a broken image.
+- **A Fedora guest must MASK NetworkManager, or every create dies at the readiness
+gate.** The guest contract is a static address from the kernel `ip=` boot param plus
+a resolver materialized from `/proc/net/pnp`, and there is no DHCP server on
+`br-fc`. The Ubuntu base ships nothing that violates this; Fedora's `@core` group
+installs **and enables** NetworkManager, which on activation flushes the
+kernel-assigned eth0 address and requests one over DHCP. The VM boots perfectly —
+systemd healthy, agent running — and the host can never reach `:8090/health`, so
+`handleCreate` times out after the 60 s agent gate with "agent never became ready"
+and the golden cold-build fails the same way. `build-devbox-rootfs-fedora.sh` masks
+`NetworkManager.service` + the dispatcher / wait-online / nm-state-sync units, and
+it must be **mask, not disable**: NM also activates on demand over D-Bus, so removing
+the wants-symlink alone does not keep it off a running system.
+- **Baked file modes come from the build shell's umask, so both builders pin
+`umask 022`.** `sudo` preserves the caller's umask, and a restrictive one ships a
+rootfs that boots and works for root but is broken for the guest's non-root user:
+npm's global tree lands `drwx------`, so `pi`, `pnpm` and `tsc` are installed yet
+resolve to nothing in a sandbox shell. The same trap catches `/etc/machine-id`,
+which must exist but be EMPTY (so systemd mints a fresh id per boot — a baked id
+makes every clone the same host to journald): a 0600 machine-id still boots (systemd
+writes as root), but Fedora's shell startup reads it, so every command in every
+non-root shell prints `bash: /etc/machine-id: Permission denied` before its output.
+The Fedora builder therefore `chmod 0644`s it explicitly rather than trusting the
+redirect. Related step 6 hygiene: `/var/log/journal` is a DIRECTORY on Fedora
+(persistent journald storage), so the old `: > /var/log/journal` printed "Is a
+directory" and trimmed nothing — it now vacuums `/var/log/journal/*` and
+`/var/log/private/*` best-effort so a cloned guest doesn't inherit the build's logs.
 
 
 
